@@ -1,0 +1,196 @@
+	
+import clr
+clr.AddReferenceToFileAndPath(r"C:\Program Files (x86)\Plugins\XKeysHD15GPILib.dll") # location of the Dll
+from XKeysHD15GPILib import *
+
+global DELAY		#-- Global variable to store the delay in secs
+
+
+#-- This method interpret the signal and pin received of the GPIO device
+def InterpretGPI(args=""):
+
+	inputType = args[0]
+	pin = int(args[1])
+	
+	Core.StatusManager.Add("Interpreting: %s signal on pin %d"%( inputType , pin ), "success")
+		
+	
+	#-- This is the amt of time needed to delay the command in order to sync with the delay of the feed
+	#-- being sent over satelite
+	DELAY = float(Project.ProjectSettings["GPI Delay (secs)"]) * 1000
+	
+	
+	#-- Ramp On: An electrical signal received by the GPIO,
+	#-- If the signal is received on the defined PIN, it will TAKE OUT/IN the graphic.		
+	if inputType.lower() == "rampon":
+	
+		if pin == int(Project.ProjectSettings["GPI Take-Out Pin"]):			
+			Scheduler.Add(Script.RefName, "TakeOut", Project.Name, "", DELAY)
+
+		if pin == int(Project.ProjectSettings["GPI Take-In Pin"]):			
+			Scheduler.Add(Script.RefName, "TakeIn", Project.Name, "", DELAY)
+		
+	#-- Ramp Off: The electrical signal is turned Off by the GPIO,
+	#-- If the signal is received on the defined PIN, it will TAKE IN the graphic.		
+	if inputType.lower() == "rampoff":
+		return
+		if pin == int(Project.ProjectSettings["GPI Take-In Pin"]):
+			Scheduler.Add(Script.RefName, "TakeIn", Project.Name, "", DELAY)
+
+	
+	#-- Pulse is an On/Off signal received by the GPIO,
+	#-- Depending on which pin the signal was received, it will either take in or out the graphic.
+	if inputType.lower() == "pulse":
+	
+		if pin == int(Project.ProjectSettings["GPI Take-In Pin"]):
+			Scheduler.Add(Script.RefName, "TakeIn", Project.Name, "", DELAY)	
+		
+		
+		elif pin == int(Project.ProjectSettings["GPI Take-Out Pin"]):
+			Scheduler.Add(Script.RefName, "TakeOut", Project.Name, "", DELAY)		
+	
+
+
+#-- Function that removes the graphics from air
+def TakeOut(args=""):
+	print "EXECUTING TAKEOUT FROM ENGINES"
+	Core.StatusManager.Add("GRAPHICS REMOVED VIA GPIO", "warning")
+	
+	Globals["Engines"] = []
+	for engine in VizEngines:
+
+		if engine.Name.lower() != "preview":
+			dic = {}
+			dic["Engine"] = engine
+			dic["BACK_LAYER"] = engine.SendCommand("RENDERER*BACK_LAYER GET_OBJECT",True).Answer
+			dic["FRONT_LAYER"] = engine.SendCommand("RENDERER*FRONT_LAYER GET_OBJECT",True).Answer
+			dic["MIDDLE_LAYER"] =engine.SendCommand("RENDERER*MIDDLE_LAYER GET_OBJECT",True).Answer
+			engine.SendCommand("RENDERER*BACK_LAYER SET_OBJECT",False)
+			engine.SendCommand("RENDERER*FRONT_LAYER SET_OBJECT",False)
+			engine.SendCommand("RENDERER*MIDDLE_LAYER SET_OBJECT",False)
+			
+			
+			Globals["Engines"].append(dic)
+
+#-- Function that replaces the removed graphics
+def TakeIn(args=""):
+	
+	if not Globals["Engines"]:
+		return
+		
+	print "EXECUTING TAKEIN FROM ENGINES"	
+	Core.StatusManager.Add("GRAPHICS ADDED VIA GPIO", "warning")
+	
+	for engineStatus in Globals["Engines"]:
+		engine = engineStatus["Engine"]
+		engine.SendCommand("RENDERER*BACK_LAYER SET_OBJECT %s"%(engineStatus["BACK_LAYER"]),True)
+		engine.SendCommand("RENDERER*FRONT_LAYER SET_OBJECT %s"%(engineStatus["FRONT_LAYER"]),True)
+		engine.SendCommand("RENDERER*MIDDLE_LAYER SET_OBJECT %s"%(engineStatus["MIDDLE_LAYER"]),True)
+	
+	
+
+
+class GPIO():
+	def __init__(self):
+		self.gpis = None
+
+	#-- EventTrigger when signal received [Pulse, Ramp On, Ramp Off]
+	def GpiTrigger(self, sender, args):
+		global DELAY
+		
+		print str(args.TriggerType) + "<-----------------"
+		
+		if args.TriggerType == "Pulse":
+			
+			print("RECEIVED: Pulse! on Pin: " + str(args.Pin))
+			args = ["Pulse", str(args.Pin)]
+			
+			Scheduler.Add(Script.RefName, "InterpretGPI", Project.Name, args, 0)
+			
+		if args.TriggerType == "RampOn":
+		
+			print("RECEIVED: RampOn! on Pin: " + str(args.Pin))				
+			args = ["RampOn", str(args.Pin)]
+			
+			Scheduler.Add(Script.RefName, "InterpretGPI", Project.Name, args, 0)
+			
+		if args.TriggerType == "RampOff":
+		
+			print("RECEIVED: RampOff! on Pin: " + str(args.Pin))				
+			args = ["RampOff", str(args.Pin)]
+			
+			Scheduler.Add(Script.RefName, "InterpretGPI", Project.Name, args, 0)
+
+
+	def Execute(self):
+		self.gpis = XKeysHD15GPI() 				# Create object
+		self.gpis.CleanUpAdapterResources() 	# Sanitize
+		self.gpis.OpenAdapter(True) 			# Connect to the adapter. Method arg = isInput.
+		
+		self.gpis.GpiTrigger -= self.GpiTrigger # Just to make sure there are no hooks
+		self.gpis.GpiTrigger += self.GpiTrigger # Hook the GPI trigger event to the GpiTrigger
+		
+		print "GPIO INITIALIZED"
+	
+
+	def Pulse(self, pin, delay):
+		try:
+			self.gpis.PulseOutput(int(pin), int(delay) ) # Send a pulse (on and off) of 'delay'ms on pin 1
+			print ("SENT: Pulse! on Pin: " + str(pin))
+		except:
+			print "Something went wrong with the GPIO Device with Pulse"
+			
+			
+	def RampOn(self, pin):
+		try:
+			self.gpis.TriggerOnOutput( int(pin) ) # Sets to high on pin 1
+			
+			print ("SENT: RampOn! on Pin: " + str(pin))
+		except:
+			print "Something went wrong with the GPIO Device with RampOn"
+			
+			
+	def RampOff(self, pin):
+		try:
+			self.gpis.TriggerOffOutput( int(pin) ) # Sets to low on pin 1		
+
+			print ("SENT: RampOff! on Pin: " + str(pin))
+		except:
+			print "Something went wrong with the GPIO Device with RampOFF"	
+			
+
+#-- Function that initialized the GPIO class
+def Execute():
+
+	
+	Globals["GPIO"] = GPIO()
+	Globals["GPIO"].Execute()
+	Globals["Gpi-Flag"] = False
+	
+
+#----------------------- TESTING FUNCTIONS -------------------------
+
+#-- Fuctions to test SENDING the signal
+def Pulse():
+	
+	Globals["GPIO"].Pulse(1,500)
+	
+def TriggerOn():
+	Globals["GPIO"].RampOn(1)	
+	
+def TriggerOf():
+	Globals["GPIO"].RampOff(1)		
+	
+#-- Function to simulate signal RECEIVED and test the outcome	
+def _IntRampOn():
+	args = ["RampOn", 2]
+	InterpretGPI(args)
+
+def _IntRampOff():
+	args = ["RampOff", 1]
+	InterpretGPI(args)
+	
+def _IntPulse():
+	args = ["Pulse", 1]
+	InterpretGPI(args)
+	
